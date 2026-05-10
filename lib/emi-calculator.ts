@@ -7,9 +7,15 @@ export interface AmortizationEntry {
   extraPayment?: number;
 }
 
+export type PrepaymentStrategy = "reduce-tenure" | "reduce-emi";
+
 export interface LumpSumPayment {
   month: number;
   amount: number;
+  /** How to handle the loan after this prepayment */
+  strategy: PrepaymentStrategy;
+  /** For reduce-tenure only: explicit target remaining months (auto-calculated when omitted) */
+  customRemainingTenure?: number;
 }
 
 export interface LoanDetails {
@@ -86,8 +92,17 @@ export function generateAmortizationSchedule(
 }
 
 /**
- * Generate amortization schedule with lump sum prepayments.
- * Tenure stays FIXED. EMI is recalculated (reduced) after each lump sum payment.
+ * Generate amortization schedule with per-entry prepayment strategies.
+ *
+ * Strategy "reduce-emi":     Keep remaining tenure fixed, recalculate (lower) EMI after prepayment.
+ * Strategy "reduce-tenure":  Keep current EMI, compute shorter tenure using:
+ *                            n = ⌈ log(EMI / (EMI − P·r)) / log(1 + r) ⌉
+ *                            If customRemainingTenure is set, recalculate EMI for that target.
+ *
+ * Monthly-reducing-balance method (banking standard):
+ *   Interest  = Outstanding Balance × Monthly Rate
+ *   Principal = EMI − Interest
+ *   Balance   = Balance − Principal − LumpSum
  */
 export function generateAmortizationScheduleWithLumpSums(
   principal: number,
@@ -98,53 +113,98 @@ export function generateAmortizationScheduleWithLumpSums(
   const schedule: AmortizationEntry[] = [];
   const monthlyRate = annualRate / 12 / 100;
   let balance = principal;
-  // Start with the initial EMI for the full tenure
   let currentEMI = calculateEMI(principal, annualRate, months);
 
-  // Aggregate lump sums by month
-  const lumpSumMap = new Map<number, number>();
-  for (const ls of lumpSums) {
-    lumpSumMap.set(ls.month, (lumpSumMap.get(ls.month) || 0) + ls.amount);
+  // Effective end month — shortened by reduce-tenure prepayments
+  let effectiveEndMonth = months;
+
+  // Build map: month → ordered list of lump-sum entries
+  const lumpSumMap = new Map<number, LumpSumPayment[]>();
+  for (const ls of [...lumpSums].sort((a, b) => a.month - b.month)) {
+    const existing = lumpSumMap.get(ls.month) ?? [];
+    lumpSumMap.set(ls.month, [...existing, ls]);
   }
 
-  for (let month = 1; month <= months; month++) {
-    if (balance <= 0) break;
+  for (let month = 1; month <= effectiveEndMonth; month++) {
+    if (balance < 0.005) break; // rounding tolerance
 
-    // Step 1: Calculate interest and principal for this month using current EMI
+    // ── Step 1: Interest this month ──────────────────────────────────────
     const interest = balance * monthlyRate;
-    let principalPaid = currentEMI - interest;
 
-    // Guard: if remaining balance is less than principal portion, cap it
-    if (principalPaid > balance) {
+    // ── Step 2: Principal this month (cap at remaining balance) ──────────
+    const principalCapacity = currentEMI - interest;
+    let principalPaid: number;
+    let emiPaid: number;
+    let isFinalPayment = false;
+
+    if (principalCapacity >= balance) {
+      // Final payment: adjust EMI so balance hits exactly zero (bank standard)
       principalPaid = balance;
+      emiPaid = principalPaid + interest;
+      isFinalPayment = true;
+    } else {
+      principalPaid = principalCapacity;
+      emiPaid = currentEMI;
     }
 
-    // Step 2: Subtract principal from balance
     balance = Math.max(0, balance - principalPaid);
 
-    // Step 3: Apply lump sum (if any) AFTER regular EMI
-    const extra = lumpSumMap.get(month) || 0;
-    let actualExtra = 0;
-    if (extra > 0 && balance > 0) {
-      actualExtra = Math.min(extra, balance);
-      balance = Math.max(0, balance - actualExtra);
+    // ── Step 3: Apply lump sums for this month ───────────────────────────
+    let totalExtra = 0;
 
-      // Step 4: Recalculate EMI using remaining balance and remaining months
-      // (tenure stays fixed, EMI reduces)
-      const remainingMonths = months - month;
-      if (remainingMonths > 0 && balance > 0) {
-        currentEMI = calculateEMI(balance, annualRate, remainingMonths);
+    if (!isFinalPayment) {
+      const lumpSumsThisMonth = lumpSumMap.get(month) ?? [];
+
+      for (const ls of lumpSumsThisMonth) {
+        if (balance < 0.005) break;
+
+        const actualExtra = Math.min(ls.amount, balance);
+        totalExtra += actualExtra;
+        balance = Math.max(0, balance - actualExtra);
+
+        if (balance < 0.005) break; // loan cleared by this prepayment
+
+        const remainingMonths = effectiveEndMonth - month;
+        if (remainingMonths < 1) break;
+
+        if (ls.strategy === "reduce-emi") {
+          // Keep tenure, lower EMI
+          currentEMI = calculateEMI(balance, annualRate, remainingMonths);
+
+        } else {
+          // reduce-tenure: keep EMI same (or use custom target months)
+          if (ls.customRemainingTenure && ls.customRemainingTenure > 0) {
+            // User-specified target: recalculate EMI for that horizon
+            currentEMI = calculateEMI(balance, annualRate, ls.customRemainingTenure);
+            effectiveEndMonth = month + ls.customRemainingTenure;
+          } else {
+            // Auto: derive new tenure with standard formula
+            const minPayment = balance * monthlyRate;
+            if (currentEMI <= minPayment) {
+              // EMI too low to amortise — recalculate to avoid infinite loop
+              currentEMI = calculateEMI(balance, annualRate, remainingMonths);
+            } else {
+              const newRemainingMonths = Math.ceil(
+                Math.log(currentEMI / (currentEMI - minPayment)) /
+                Math.log(1 + monthlyRate)
+              );
+              effectiveEndMonth = month + Math.max(1, newRemainingMonths);
+            }
+          }
+        }
       }
     }
 
     schedule.push({
       month,
-      emi: Math.round(currentEMI * 100) / 100,
+      emi: Math.round(emiPaid * 100) / 100,
       principal: Math.round(principalPaid * 100) / 100,
       interest: Math.round(interest * 100) / 100,
       balance: Math.round(balance * 100) / 100,
-      extraPayment: Math.round(actualExtra * 100) / 100,
+      extraPayment: Math.round(totalExtra * 100) / 100,
     });
+
+    if (balance < 0.005) break;
   }
 
   return schedule;

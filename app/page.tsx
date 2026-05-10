@@ -1,18 +1,17 @@
 "use client";
-import { SmartLoanPlanner } from "@/components/emi/smart-loan-planner";
 
 import { useState, useCallback } from "react";
+import { SmartLoanPlanner } from "@/components/emi/smart-loan-planner";
 import { Header } from "@/components/emi/header";
 import { LoanInputForm } from "@/components/emi/loan-input-form";
 import { ResultCards } from "@/components/emi/result-cards";
 import { EMICharts } from "@/components/emi/emi-charts";
 import { AmortizationTable } from "@/components/emi/amortization-table";
 import { LoanComparison } from "@/components/emi/loan-comparison";
-import { WhatIfSimulator } from "@/components/emi/what-if-simulator";
 import { PartPaymentCalculator } from "@/components/emi/part-payment-calculator";
 import { AdvancedEMIFeatures } from "@/components/emi/advanced-emi-features";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Calculator, Scale, Sliders, Banknote, Settings2, Plus, Trash2 } from "lucide-react";
+import { Calculator, Scale, Banknote, Settings2, Plus, Trash2 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -26,6 +25,7 @@ import {
   type EMIResult,
   type AmortizationEntry,
   type LumpSumPayment,
+  type PrepaymentStrategy,
 } from "@/lib/emi-calculator";
 
 export default function EMICalculator() {
@@ -40,15 +40,26 @@ export default function EMICalculator() {
   const [lumpSums, setLumpSums] = useState<LumpSumPayment[]>([]);
   const [lumpMonth, setLumpMonth] = useState<string>("");
   const [lumpAmount, setLumpAmount] = useState<string>("");
+  const [lumpStrategy, setLumpStrategy] = useState<PrepaymentStrategy>("reduce-emi");
+  const [lumpCustomTenure, setLumpCustomTenure] = useState<string>("");
 
   const addLumpSum = useCallback(() => {
     const month = parseInt(lumpMonth);
     const amount = parseFloat(lumpAmount);
     if (!month || month < 1 || !amount || amount <= 0) return;
-    setLumpSums((prev) => [...prev, { month, amount }].sort((a, b) => a.month - b.month));
+    const customRemainingTenure =
+      lumpStrategy === "reduce-tenure" && lumpCustomTenure
+        ? parseInt(lumpCustomTenure)
+        : undefined;
+    setLumpSums((prev) =>
+      [...prev, { month, amount, strategy: lumpStrategy, customRemainingTenure }].sort(
+        (a, b) => a.month - b.month
+      )
+    );
     setLumpMonth("");
     setLumpAmount("");
-  }, [lumpMonth, lumpAmount]);
+    setLumpCustomTenure("");
+  }, [lumpMonth, lumpAmount, lumpStrategy, lumpCustomTenure]);
 
   const removeLumpSum = useCallback((index: number) => {
     setLumpSums((prev) => prev.filter((_, i) => i !== index));
@@ -99,6 +110,7 @@ export default function EMICalculator() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
+                {/* Month + Amount inputs */}
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <Label htmlFor="lump-month" className="text-xs">Month</Label>
@@ -123,6 +135,56 @@ export default function EMICalculator() {
                     />
                   </div>
                 </div>
+
+                {/* Strategy selector */}
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Prepayment Strategy</Label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setLumpStrategy("reduce-emi")}
+                      className={`text-xs px-2 py-2 rounded-md border transition-all text-left ${
+                        lumpStrategy === "reduce-emi"
+                          ? "border-primary bg-primary/15 text-primary font-medium"
+                          : "border-border bg-muted/30 text-muted-foreground hover:border-primary/40"
+                      }`}
+                    >
+                      <span className="block font-semibold">Reduce EMI</span>
+                      <span className="block text-[10px] opacity-70 mt-0.5">Keep Tenure Same</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setLumpStrategy("reduce-tenure"); setLumpCustomTenure(""); }}
+                      className={`text-xs px-2 py-2 rounded-md border transition-all text-left ${
+                        lumpStrategy === "reduce-tenure"
+                          ? "border-amber-500/70 bg-amber-500/10 text-amber-400 font-medium"
+                          : "border-border bg-muted/30 text-muted-foreground hover:border-amber-500/30"
+                      }`}
+                    >
+                      <span className="block font-semibold">Reduce Tenure</span>
+                      <span className="block text-[10px] opacity-70 mt-0.5">Keep EMI Same</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Optional custom remaining tenure — only for reduce-tenure */}
+                {lumpStrategy === "reduce-tenure" && (
+                  <div className="space-y-1">
+                    <Label htmlFor="lump-custom-tenure" className="text-xs">
+                      Target Remaining Months
+                      <span className="ml-1 text-muted-foreground font-normal">(optional)</span>
+                    </Label>
+                    <Input
+                      id="lump-custom-tenure"
+                      type="number"
+                      min={1}
+                      placeholder="Auto-calculate if empty"
+                      value={lumpCustomTenure}
+                      onChange={(e) => setLumpCustomTenure(e.target.value)}
+                    />
+                  </div>
+                )}
+
                 <Button
                   variant="outline"
                   size="sm"
@@ -131,7 +193,7 @@ export default function EMICalculator() {
                   disabled={!lumpMonth || !lumpAmount}
                 >
                   <Plus className="h-4 w-4 mr-1" />
-                  Add Lump Sum
+                  Add Prepayment
                 </Button>
 
                 {lumpSums.length > 0 && (
@@ -141,13 +203,27 @@ export default function EMICalculator() {
                         key={i}
                         className="flex items-center justify-between rounded-md border px-3 py-1.5 text-sm"
                       >
-                        <span>
-                          Month <Badge variant="secondary">{ls.month}</Badge>{" "}
-                          — ₹{ls.amount.toLocaleString("en-IN")}
+                        <span className="flex items-center gap-1.5 flex-wrap">
+                          Month <Badge variant="secondary">{ls.month}</Badge>
+                          {" "}— ₹{ls.amount.toLocaleString("en-IN")}
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] py-0 ${
+                              ls.strategy === "reduce-emi"
+                                ? "border-primary/30 bg-primary/10 text-primary"
+                                : "border-amber-500/30 bg-amber-500/10 text-amber-400"
+                            }`}
+                          >
+                            {ls.strategy === "reduce-emi"
+                              ? "Reduce EMI"
+                              : ls.customRemainingTenure
+                              ? `Reduce Tenure (${ls.customRemainingTenure}mo)`
+                              : "Reduce Tenure"}
+                          </Badge>
                         </span>
                         <button
                           onClick={() => removeLumpSum(i)}
-                          className="text-destructive hover:text-destructive/80 transition-colors"
+                          className="text-destructive hover:text-destructive/80 transition-colors ml-2 flex-shrink-0"
                           aria-label="Remove lump sum"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -178,18 +254,19 @@ export default function EMICalculator() {
             {/* Amortization Table */}
             <AmortizationTable schedule={schedule} isLoading={isLoading} />
 
+            {/* Smart Loan Planner — full-width tool on the main page */}
+            <SmartLoanPlanner
+              syncedLoanAmount={result != null ? loanDetails.loanAmount : undefined}
+              syncedInterestRate={result != null ? loanDetails.interestRate : undefined}
+            />
+
             {/* Advanced Tools */}
             <Tabs defaultValue="comparison" className="w-full">
-              <TabsList className="grid w-full grid-cols-4 lg:w-auto lg:inline-flex">
+              <TabsList className="grid w-full grid-cols-3 lg:w-auto lg:inline-flex">
                 <TabsTrigger value="comparison" className="gap-2">
                   <Scale className="h-4 w-4" />
                   <span className="hidden sm:inline">Compare Loans</span>
                   <span className="sm:hidden">Compare</span>
-                </TabsTrigger>
-                <TabsTrigger value="whatif" className="gap-2">
-                  <Sliders className="h-4 w-4" />
-                  <span className="hidden sm:inline">What-if</span>
-                  <span className="sm:hidden">What-if</span>
                 </TabsTrigger>
                 <TabsTrigger value="partpayment" className="gap-2">
                   <Banknote className="h-4 w-4" />
@@ -205,14 +282,6 @@ export default function EMICalculator() {
 
               <TabsContent value="comparison" className="mt-4">
                 <LoanComparison />
-              </TabsContent>
-
-              <TabsContent value="whatif" className="mt-4">
-                <WhatIfSimulator
-                  basePrincipal={loanDetails.loanAmount}
-                  baseRate={loanDetails.interestRate}
-                  baseTenure={loanDetails.tenureMonths}
-                />
               </TabsContent>
 
               <TabsContent value="partpayment" className="mt-4">

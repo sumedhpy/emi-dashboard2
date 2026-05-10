@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { BrainCircuit } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -102,11 +102,32 @@ function buildPlans(principal: number, annualRate: number, cappedEMI: number): P
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function SmartLoanPlanner() {
+export interface SmartLoanPlannerProps {
+  /** Filled from the main calculator after you run Calculate (optional). */
+  syncedLoanAmount?: number;
+  syncedInterestRate?: number;
+}
+
+export function SmartLoanPlanner({
+  syncedLoanAmount,
+  syncedInterestRate,
+}: SmartLoanPlannerProps = {}) {
   const [loanAmount, setLoanAmount]   = useState("");
   const [salary, setSalary]           = useState("");
   const [maxEMI, setMaxEMI]           = useState("");
   const [interestRate, setInterestRate] = useState("");
+
+  useEffect(() => {
+    if (syncedLoanAmount != null && syncedLoanAmount > 0) {
+      setLoanAmount(String(syncedLoanAmount));
+    }
+  }, [syncedLoanAmount]);
+
+  useEffect(() => {
+    if (syncedInterestRate != null && syncedInterestRate > 0) {
+      setInterestRate(String(syncedInterestRate));
+    }
+  }, [syncedInterestRate]);
 
   const [plans, setPlans]   = useState<Plan[] | null>(null);
   const [error, setError]   = useState<string | null>(null);
